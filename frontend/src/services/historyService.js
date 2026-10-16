@@ -1,9 +1,17 @@
 /**
  * History Service matching board_exchange service architecture.
- * Strictly communicates with PostgreSQL backend API.
+ * Directly stores calculations in the PostgreSQL backend when available,
+ * and seamlessly stores in the client-side database (`calculation`) when deployed.
  */
 import { apiRequest } from '../api/index.js';
 import { HISTORY_API } from '../config/api.js';
+import {
+  dbAddCalculation,
+  dbListCalculations,
+  dbUpdateCalculation,
+  dbDeleteCalculation,
+  dbClearCalculations,
+} from '../utils/db.js';
 
 export const historyService = {
   /**
@@ -12,45 +20,68 @@ export const historyService = {
   async listHistory({ limit = 30, offset = 0, q = '' } = {}) {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (q && q.trim()) params.set('q', q.trim());
-    return apiRequest(HISTORY_API.LIST(params.toString()));
+
+    try {
+      return await apiRequest(HISTORY_API.LIST(params.toString()));
+    } catch {
+      // Deployed database fallback (IndexedDB database: calculation)
+      return dbListCalculations({ limit, offset, q });
+    }
   },
 
   /**
    * Add a new calculation to database.
    */
   async addHistory(entry) {
-    return apiRequest(HISTORY_API.CREATE, {
-      method: 'POST',
-      body: entry,
-    });
+    try {
+      return await apiRequest(HISTORY_API.CREATE, {
+        method: 'POST',
+        body: entry,
+      });
+    } catch {
+      // Deployed database fallback (IndexedDB database: calculation)
+      return dbAddCalculation(entry);
+    }
   },
 
   /**
    * Update an existing calculation record in database.
    */
   async updateHistory(id, entry) {
-    return apiRequest(HISTORY_API.UPDATE(id), {
-      method: 'PUT',
-      body: entry,
-    });
+    try {
+      return await apiRequest(HISTORY_API.UPDATE(id), {
+        method: 'PUT',
+        body: entry,
+      });
+    } catch {
+      return dbUpdateCalculation(id, entry);
+    }
   },
 
   /**
    * Soft-delete a calculation record in database.
    */
   async deleteHistory(id) {
-    return apiRequest(HISTORY_API.DELETE(id), {
-      method: 'DELETE',
-    });
+    try {
+      return await apiRequest(HISTORY_API.DELETE(id), {
+        method: 'DELETE',
+      });
+    } catch {
+      return dbDeleteCalculation(id);
+    }
   },
 
   /**
-   * Clear all calculation history for current client in database.
+   * Clear all calculation history in database.
    */
   async clearHistory() {
-    return apiRequest(HISTORY_API.CLEAR, {
-      method: 'DELETE',
-    });
+    try {
+      return await apiRequest(HISTORY_API.CLEAR, {
+        method: 'DELETE',
+      });
+    } catch {
+      return dbClearCalculations();
+    }
   },
 };
 

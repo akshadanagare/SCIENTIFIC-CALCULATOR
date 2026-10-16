@@ -54,6 +54,9 @@ function resolveUrl(url) {
  * Sends x-client-id header for client tracking without requiring any auth token.
  */
 export async function apiRequest(endpoint, { method = 'GET', body, headers = {}, timeout = 8000 } = {}) {
+  if (!API_CONFIG.appBackendBaseUrl && typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
+    throw new ApiRequestError('No backend configured on static host', { offline: true });
+  }
   const url = resolveUrl(endpoint);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -95,6 +98,9 @@ export async function apiRequest(endpoint, { method = 'GET', body, headers = {},
  * Public API request helper (for unauthenticated endpoints like /health).
  */
 export async function publicApiRequest(endpoint, options = {}) {
+  if (!API_CONFIG.appBackendBaseUrl && typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
+    throw new ApiRequestError('No backend configured on static host', { offline: true });
+  }
   const url = resolveUrl(endpoint);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeout ?? 8000);
