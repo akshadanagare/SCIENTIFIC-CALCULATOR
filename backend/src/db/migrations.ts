@@ -32,6 +32,7 @@ export const migrations: Migration[] = [
         memory      DOUBLE PRECISION NULL,
         updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+      CREATE OR REPLACE VIEW calculation AS SELECT * FROM calculation_history;
     `,
   },
 ];
