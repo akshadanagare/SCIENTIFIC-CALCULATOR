@@ -65,6 +65,7 @@ export async function apiRequest(endpoint, { method = 'GET', body, headers = {},
         method,
         headers: {
           'x-client-id': getClientId(),
+          'bypass-tunnel-reminder': '1',
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
           ...headers,
         },
@@ -104,6 +105,7 @@ export async function publicApiRequest(endpoint, options = {}) {
       res = await fetch(url, {
         method: options.method || 'GET',
         headers: {
+          'bypass-tunnel-reminder': '1',
           ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
           ...(options.headers || {}),
         },
