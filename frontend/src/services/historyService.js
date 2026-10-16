@@ -1,12 +1,13 @@
 /**
  * History Service matching board_exchange service architecture.
+ * Strictly communicates with PostgreSQL backend API.
  */
 import { apiRequest } from '../api/index.js';
 import { HISTORY_API } from '../config/api.js';
 
 export const historyService = {
   /**
-   * Fetch calculation history with pagination and search filter.
+   * Fetch calculation history from database with pagination and search filter.
    */
   async listHistory({ limit = 30, offset = 0, q = '' } = {}) {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
@@ -15,7 +16,7 @@ export const historyService = {
   },
 
   /**
-   * Add a new calculation to history.
+   * Add a new calculation to database.
    */
   async addHistory(entry) {
     return apiRequest(HISTORY_API.CREATE, {
@@ -25,7 +26,7 @@ export const historyService = {
   },
 
   /**
-   * Update an existing calculation record (edit in place).
+   * Update an existing calculation record in database.
    */
   async updateHistory(id, entry) {
     return apiRequest(HISTORY_API.UPDATE(id), {
@@ -35,7 +36,7 @@ export const historyService = {
   },
 
   /**
-   * Soft-delete a calculation record.
+   * Soft-delete a calculation record in database.
    */
   async deleteHistory(id) {
     return apiRequest(HISTORY_API.DELETE(id), {
@@ -44,7 +45,7 @@ export const historyService = {
   },
 
   /**
-   * Clear all calculation history for current client.
+   * Clear all calculation history for current client in database.
    */
   async clearHistory() {
     return apiRequest(HISTORY_API.CLEAR, {
