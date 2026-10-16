@@ -1,36 +1,43 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../api.js';
+import { historyService } from '../services/historyService.js';
 
-const PAGE_SIZE = 30;
+export const PAGE_SIZE = 5;
 
-// Keeps the history list in sync with the server.
-// If the server is not reachable, new calculations are still shown for this session (marked "not saved").
-export function useHistory() {
+// Keeps the history list in sync with the database (through the API).
+// The list loads PAGE_SIZE records at a time; loadMore() adds the next page when the user scrolls down.
+export function useHistory({ onError } = {}) {
   const [items, setItems] = useState([]);
-  const [total, setTotal] = useState(0); // number of items on the server for the current search
+  const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
-  const [offline, setOffline] = useState(false);
+  const [failed, setFailed] = useState(false); // the list could not be loaded
   const requestId = useRef(0);
   const queryRef = useRef('');
+  const itemsRef = useRef([]);
+  const loadingRef = useRef(false);
   queryRef.current = query;
+  itemsRef.current = items;
+  const errorRef = useRef(onError);
+  errorRef.current = onError;
+  const fail = (message) => errorRef.current?.(message);
 
   const load = useCallback(async (q, offset = 0) => {
     const id = ++requestId.current; // an older, slower answer must not overwrite a newer one
+    loadingRef.current = true;
     setLoading(true);
     try {
-      const data = await api.listHistory({ q, offset, limit: PAGE_SIZE });
+      const data = await historyService.listHistory({ q, offset, limit: PAGE_SIZE });
       if (id !== requestId.current) return;
-      setItems((prev) => {
-        const unsaved = prev.filter((i) => i.local && !q);
-        return offset === 0 ? [...unsaved, ...data.items] : [...prev, ...data.items];
-      });
+      setItems((prev) => (offset === 0 ? data.items : [...prev, ...data.items]));
       setTotal(data.total);
-      setOffline(false);
+      setFailed(false);
     } catch {
-      if (id === requestId.current) setOffline(true);
+      if (id === requestId.current) setFailed(true);
     } finally {
-      if (id === requestId.current) setLoading(false);
+      if (id === requestId.current) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -40,60 +47,61 @@ export function useHistory() {
     return () => clearTimeout(timer);
   }, [query, load]);
 
+  const refresh = useCallback(() => load(queryRef.current, 0), [load]);
+
+  const loadMore = useCallback(() => {
+    if (loadingRef.current || itemsRef.current.length >= total) return;
+    load(queryRef.current, itemsRef.current.length);
+  }, [load, total]);
+
+  // a finished calculation -> new record
   const add = useCallback(async (entry) => {
     try {
-      const saved = await api.addHistory(entry);
-      setOffline(false);
-      if (queryRef.current.trim()) {
-        load(queryRef.current, 0); // a search is active: reload so the list stays correct
-      } else {
+      const saved = await historyService.addHistory(entry);
+      if (queryRef.current.trim()) load(queryRef.current, 0);
+      else {
         setItems((prev) => [saved, ...prev]);
         setTotal((t) => t + 1);
       }
     } catch {
-      setOffline(true);
-      const local = {
-        id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        ...entry,
-        createdAt: new Date().toISOString(),
-        local: true,
-      };
-      setItems((prev) => [local, ...prev]);
+      fail('Could not save this calculation. Check your connection.');
     }
   }, [load]);
 
+  // an edited calculation -> the SAME record is changed (no new record)
+  const update = useCallback(async (id, entry) => {
+    try {
+      const saved = await historyService.updateHistory(id, entry);
+      setItems((prev) => prev.map((i) => (i.id === id ? saved : i)));
+    } catch (err) {
+      if (err.status === 404) { await add(entry); return; } // deleted meanwhile: keep it as a new record
+      fail('Could not update this calculation. Check your connection.');
+    }
+  }, [add]);
+
   const remove = useCallback(async (id) => {
-    if (!id.startsWith('local-')) {
-      try {
-        await api.deleteHistory(id);
-        setTotal((t) => Math.max(0, t - 1));
-      } catch (err) {
-        if (err.status !== 404) { setOffline(Boolean(err.offline)); return; } // keep the item if it was not deleted
-        setTotal((t) => Math.max(0, t - 1));
-      }
+    try {
+      await historyService.deleteHistory(id);
+    } catch (err) {
+      if (err.status !== 404) { fail('Could not delete. Check your connection.'); return; }
     }
     setItems((prev) => prev.filter((i) => i.id !== id));
+    setTotal((t) => Math.max(0, t - 1));
   }, []);
 
   const clear = useCallback(async () => {
     try {
-      await api.clearHistory();
+      await historyService.clearHistory();
       setItems([]);
       setTotal(0);
-      setOffline(false);
-    } catch (err) {
-      setOffline(Boolean(err.offline));
+    } catch {
+      fail('Could not clear the history. Check your connection.');
     }
   }, []);
 
-  const savedCount = items.filter((i) => !i.local).length;
-  const loadMore = useCallback(() => load(queryRef.current, savedCount), [load, savedCount]);
-  const retry = useCallback(() => load(queryRef.current, 0), [load]);
-
   return {
-    items, total, query, setQuery, loading, offline,
-    hasMore: savedCount < total,
-    remaining: Math.max(0, total - savedCount),
-    add, remove, clear, loadMore, retry,
+    items, total, query, setQuery, loading, failed,
+    hasMore: items.length < total,
+    add, update, remove, clear, loadMore, refresh,
   };
 }

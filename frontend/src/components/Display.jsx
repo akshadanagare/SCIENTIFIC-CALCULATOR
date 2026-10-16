@@ -1,4 +1,4 @@
-export default function Display({ top, main, error, memory, angle, scientific, onCopy, copied }) {
+export default function Display({ top, main, error, memory, angle, scientific, onCopy, copied, editing, onCancelEdit }) {
   const text = error ?? main;
   const size = error ? 'error' : text.length > 24 ? 'xs' : text.length > 17 ? 'sm' : text.length > 11 ? 'md' : 'lg';
 
@@ -7,6 +7,11 @@ export default function Display({ top, main, error, memory, angle, scientific, o
       <div className="display__meta">
         <span className={`badge ${memory !== null ? 'badge--on' : ''}`} title="Memory in use">M</span>
         {scientific && <span className="badge badge--on">{angle === 'deg' ? 'DEG' : 'RAD'}</span>}
+        {editing && (
+          <button className="badge badge--on badge--btn" onClick={onCancelEdit} title="Editing a saved calculation. Click to cancel." aria-label="Cancel editing">
+            EDIT ✕
+          </button>
+        )}
         <button className="copy" onClick={onCopy} aria-label="Copy result">
           {copied ? 'Copied' : 'Copy'}
         </button>

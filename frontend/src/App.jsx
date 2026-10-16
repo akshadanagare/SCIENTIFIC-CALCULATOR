@@ -7,7 +7,7 @@ import Display from './components/Display.jsx';
 import Keypad from './components/Keypad.jsx';
 import History from './components/History.jsx';
 import { useHistory } from './hooks/useHistory.js';
-import { api } from './api.js';
+import { preferencesService } from './services/preferencesService.js';
 
 // What the screen shows for a given calculator state
 function buildView(state) {
@@ -37,20 +37,45 @@ function buildView(state) {
   return { top, main };
 }
 
+const HistoryIcon = () => (
+  <svg viewBox='0 0 24 24' width='20' height='20' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'>
+    <path d='M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8' />
+    <path d='M3 3v5h5' />
+    <path d='M12 7v5l4 2' />
+  </svg>
+);
+
 export default function App() {
-  const [state, dispatch] = useReducer(reducer, initialState);
+  const [state, rawDispatch] = useReducer(reducer, initialState);
   const [mode, setMode] = useState('standard'); // 'standard' | 'scientific'
   const [theme, setTheme] = useState(() =>
     window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   );
   const [copied, setCopied] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false); // history drawer on small screens
+  const [view, setView] = useState('calculator'); // 'calculator' | 'history'
+  const [editingId, setEditingId] = useState(null); // id of the history record being edited
+  const [toast, setToast] = useState('');
   const [prefsReady, setPrefsReady] = useState(false);
   const touched = useRef({ theme: false, mode: false }); // changed by the user before the saved settings arrived
-  const history = useHistory();
+  const showToast = useCallback((message) => {
+    setToast(message);
+    clearTimeout(showToast.timer);
+    showToast.timer = setTimeout(() => setToast(''), 3500);
+  }, []);
+  const history = useHistory({ onError: showToast });
+
+  // Every key press goes through here. AC also cancels an edit in progress.
+  const dispatch = useCallback((action) => {
+    if (action.type === 'CLEAR') setEditingId(null);
+    rawDispatch(action);
+  }, []);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const editingRef = useRef(editingId);
+  editingRef.current = editingId;
 
   const scientific = mode === 'scientific';
-  const view = useMemo(() => buildView(state), [state]);
+  const screen = useMemo(() => buildView(state), [state]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -59,12 +84,12 @@ export default function App() {
   // Load the saved settings (theme, mode, Deg/Rad, memory) from the server once.
   useEffect(() => {
     let cancelled = false;
-    api.getPreferences()
+    preferencesService.getPreferences()
       .then((p) => {
         if (cancelled) return;
         if (!touched.current.theme && (p.theme === 'light' || p.theme === 'dark')) setTheme(p.theme);
         if (!touched.current.mode && (p.mode === 'standard' || p.mode === 'scientific')) setMode(p.mode);
-        dispatch({ type: 'HYDRATE', angle: p.angle, memory: p.memory });
+        rawDispatch({ type: 'HYDRATE', angle: p.angle, memory: p.memory });
       })
       .catch(() => {}) // server offline: the calculator still works with default settings
       .finally(() => { if (!cancelled) setPrefsReady(true); });
@@ -75,24 +100,32 @@ export default function App() {
   useEffect(() => {
     if (!prefsReady) return undefined;
     const timer = setTimeout(() => {
-      api.savePreferences({ theme, mode, angle: state.angle, memory: state.memory }).catch(() => {});
+      preferencesService.savePreferences({ theme, mode, angle: state.angle, memory: state.memory }).catch(() => {});
     }, 400);
     return () => clearTimeout(timer);
   }, [prefsReady, theme, mode, state.angle, state.memory]);
 
   // Save every finished calculation (after "=") to the history on the server.
-  const addToHistory = useRef(history.add);
-  addToHistory.current = history.add;
+  // If a saved calculation was opened with "Edit", that same record is updated instead of adding a new one.
+  const saveRef = useRef(null);
+  saveRef.current = { add: history.add, update: history.update };
   useEffect(() => {
     if (!state.evalSeq) return;
     const tokens = closeAll(state.tokens);
-    addToHistory.current({
+    const entry = {
       expression: displayText(tokens),
       tokens,
       result: toStr(state.result),
       mode,
       angle: state.angle,
-    });
+    };
+    const id = editingRef.current;
+    if (id) {
+      setEditingId(null);
+      saveRef.current.update(id, entry);
+    } else {
+      saveRef.current.add(entry);
+    }
     // only runs when a new calculation is finished
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.evalSeq]);
@@ -101,6 +134,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (viewRef.current !== 'calculator') return; // typing in the history search must not press calculator keys
+      if (e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
       if (/^\d$/.test(e.key)) {
         dispatch({ type: 'DIGIT', digit: e.key });
         return;
@@ -113,7 +148,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [dispatch]);
 
   const copy = useCallback(async () => {
     const v = currentValue(state);
@@ -127,53 +162,72 @@ export default function App() {
     }
   }, [state]);
 
+  const openHistory = () => { setView('history'); history.refresh(); };
+  const closeHistory = () => { setView('calculator'); history.setQuery(''); };
+
   return (
-    <main className="stage">
-      <div className={`device ${scientific ? 'device--sci' : ''}`}>
-        <header className="device__bar">
-          <div className="tabs" role="tablist" aria-label="Calculator mode">
-            {['standard', 'scientific'].map((m) => (
-              <button
-                key={m}
-                role="tab"
-                aria-selected={mode === m}
-                className={`tab ${mode === m ? 'is-on' : ''}`}
-                onClick={() => { touched.current.mode = true; setMode(m); }}
-              >
-                {m === 'standard' ? 'Standard' : 'Scientific'}
+    <main className='stage'>
+      {view === 'history' ? (
+        <div className='device device--history'>
+          <History
+            history={history}
+            onBack={closeHistory}
+            onUseResult={(value) => { dispatch({ type: 'RECALL_RESULT', value }); closeHistory(); }}
+            onUseExpression={(item) => {
+              dispatch({ type: 'RECALL_EXPR', tokens: item.tokens });
+              setEditingId(item.id);
+              closeHistory();
+            }}
+          />
+        </div>
+      ) : (
+        <div className={`device ${scientific ? 'device--sci' : ''}`}>
+          <header className='device__bar'>
+            <div className='tabs' role='tablist' aria-label='Calculator mode'>
+              {['standard', 'scientific'].map((m) => (
+                <button
+                  key={m}
+                  role='tab'
+                  aria-selected={mode === m}
+                  className={`tab ${mode === m ? 'is-on' : ''}`}
+                  onClick={() => { touched.current.mode = true; setMode(m); }}
+                >
+                  {m === 'standard' ? 'Standard' : 'Scientific'}
+                </button>
+              ))}
+            </div>
+            <div className='device__tools'>
+              <button className='iconbtn iconbtn--bordered' onClick={openHistory} aria-label='Open history' title='History'>
+                <HistoryIcon />
               </button>
-            ))}
-          </div>
-          <button
-            className="tool"
-            onClick={() => { touched.current.theme = true; setTheme(theme === 'dark' ? 'light' : 'dark'); }}
-            aria-label="Toggle theme"
-          >
-            {theme === 'dark' ? 'Light' : 'Dark'}
-          </button>
-        </header>
+              <button
+                className='tool'
+                onClick={() => { touched.current.theme = true; setTheme(theme === 'dark' ? 'light' : 'dark'); }}
+                aria-label='Toggle theme'
+              >
+                {theme === 'dark' ? 'Light' : 'Dark'}
+              </button>
+            </div>
+          </header>
 
-        <Display
-          top={view.top}
-          main={view.main}
-          error={state.error}
-          memory={state.memory}
-          angle={state.angle}
-          scientific={scientific}
-          onCopy={copy}
-          copied={copied}
-        />
+          <Display
+            top={screen.top}
+            main={screen.main}
+            error={state.error}
+            memory={state.memory}
+            angle={state.angle}
+            scientific={scientific}
+            onCopy={copy}
+            copied={copied}
+            editing={Boolean(editingId)}
+            onCancelEdit={() => setEditingId(null)}
+          />
 
-        <Keypad dispatch={dispatch} scientific={scientific} second={state.second} angle={state.angle} />
-      </div>
+          <Keypad dispatch={dispatch} scientific={scientific} second={state.second} angle={state.angle} />
+        </div>
+      )}
 
-      <History
-        history={history}
-        open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
-        onUseResult={(value) => { dispatch({ type: 'RECALL_RESULT', value }); setHistoryOpen(false); }}
-        onUseExpression={(tokens) => { dispatch({ type: 'RECALL_EXPR', tokens }); setHistoryOpen(false); }}
-      />
+      {toast && <div className='toast' role='status'>{toast}</div>}
     </main>
   );
 }
